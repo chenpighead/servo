@@ -862,25 +862,44 @@ ${helpers.single_keyword("font-variant-position",
     }
 </%helpers:longhand>
 
-// https://www.w3.org/TR/css-fonts-3/#propdef-font-language-override
-<%helpers:longhand name="font-language-override" products="none" animatable="False" extra_prefixes="moz"
+<%helpers:longhand name="font-language-override" products="gecko" animatable="False" extra_prefixes="moz"
                    spec="https://drafts.csswg.org/css-fonts-3/#propdef-font-language-override">
+    use std::fmt;
+    use style_traits::ToCss;
     use values::HasViewportPercentage;
-    use values::computed::ComputedValueAsSpecified;
-    pub use self::computed_value::T as SpecifiedValue;
-
-    impl ComputedValueAsSpecified for SpecifiedValue {}
     no_viewport_percentage!(SpecifiedValue);
+
+    #[derive(Debug, Clone, PartialEq, Eq, Copy)]
+    #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
+    pub enum SpecifiedValue {
+        Normal,
+        Override(String),
+    }
+
+    impl ToCss for SpecifiedValue {
+        fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
+            match *self {
+                Either::First(SpecifiedValue::Normal) => dest.write_str("normal"),
+                Either::Second(SpecifiedValue::Override(x)) => dest.write_str(x),
+            }
+        }
+    }
 
     pub mod computed_value {
         use std::fmt;
         use style_traits::ToCss;
+        use byteorder::BigEndian;
 
         impl ToCss for T {
             fn to_css<W>(&self, dest: &mut W) -> fmt::Result where W: fmt::Write {
-                match *self {
-                    T::Normal => dest.write_str("normal"),
-                    T::Override(ref lang) => write!(dest, "\"{}\"", lang),
+                match self.0 {
+                    0 => dest.write_str("normal");
+                    _ => {
+                        let a : u32 = self.0;
+                        let mut buf = [0; 4];
+                        BigEndian::write_u32(&mut buf, a);
+                        write!(dest, "\"{}\"", String::from_utf8(buf.to_vec()).unwrap());
+                    }
                 }
             }
         }
@@ -888,19 +907,52 @@ ${helpers.single_keyword("font-variant-position",
         #[derive(Clone, Debug, PartialEq)]
         #[cfg_attr(feature = "servo", derive(HeapSizeOf))]
         pub enum T {
-            Normal,
-            Override(String),
+            Override(u32),
         }
     }
 
     #[inline]
     pub fn get_initial_value() -> computed_value::T {
-        computed_value::T::Normal
+        computed_value::T::Override(0)
     }
 
     #[inline]
     pub fn get_initial_specified_value() -> SpecifiedValue {
         SpecifiedValue::Normal
+    }
+
+    impl ToComputedValue for SpecifiedValue {
+        use byteorder::BigEndian;
+        type ComputedValue = computed_value::T;
+
+        #[inline]
+        fn to_computed_value(&self, context: &Context) -> computed_value::T {
+            match *self {
+                SpecifiedValue::Normal => computed_value::T(0),
+                SpecifiedValue::Override(ref lang) => {
+                    if !lang.len() || lang.len() > 4 {
+                        computed_value::T(0)
+                    } else {
+                        // store string tag into u32
+                        let s = String::from(lang);
+                        let mut bytes = s.into_bytes();
+                        computed_value::T(BigEndian::read_u32(&bytes))
+                    }
+                }
+            }
+        }
+        #[inline]
+        fn from_computed_value(computed: &computed_value::T) -> Self {
+            match computed.0 {
+                0 => SpecifiedValue::Normal,
+                _ => {
+                    let a : u32 = computed.0;
+                    let mut buf = [0; 4];
+                    BigEndian::write_u32(&mut buf, a);
+                    SpecifiedValue::Override(String::from_utf8(buf.to_vec()).unwrap())
+                }
+            }
+        }
     }
 
     pub fn parse(_context: &ParserContext, input: &mut Parser) -> Result<SpecifiedValue, ()> {
